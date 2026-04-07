@@ -1,0 +1,43 @@
+ Project Context: Automated Model Processing Pipeline (v4 - Final)
+1. General Overview:
+A Bash-based backend automation script that scans a segmented storage for user uploads (CSV + JSON) and triggers specific machine learning models based on the user's subscription type.
+2. Storage Architecture (Segmented by User):
+text
+
+/storage_root/
+└── {user_id}/                # Individual user directory
+    ├── [filename].csv        # Raw data file
+    └── [filename].json       # Manifest/Metadata file
+
+Используйте код с осторожностью.
+3. JSON Manifest Schema (Strict):
+json
+
+{
+  "user_id": "string",
+  "user_email": "string",
+  "subscription_type": "FREE_TRIAL | STANDARD | PREMIUM",
+  "file_name": "string",
+  "upload_timestamp": 1712512500 
+}
+
+Используйте код с осторожностью.
+
+    Time Standard: upload_timestamp must be in Unix Epoch (seconds, UTC).
+
+4. Business Logic & Model Mapping:
+
+    FREE_TRIAL → Execute RandomForest model (Constraint: 1 file processing).
+    STANDARD → Execute LGBM model.
+    PREMIUM → Execute Model_3.
+
+5. Backend Script Logic:
+
+    Double Filter:
+        FS Layer: find files modified within the last 24h (-mmin -1440).
+        Logic Layer: Compare $(date +%s) with upload_timestamp. Ignore if the difference is > 86,400 seconds (24h).
+    Logging: Integrated log_message function with INFO, NOTICE, and ERROR levels. Timestamps in logs follow YYYYMMDD-HHMMSS format.
+    Tools: Uses jq for robust JSON parsing.
+
+6. Documentation:
+An English technical guide for the frontend team (Markdown format) has been generated and finalized.

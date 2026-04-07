@@ -1,0 +1,34 @@
+Context for Development: Bash Automation & Model Processing (v2)
+1. Проект: Bash-скрипт для обработки данных на основе JSON-манифестов за последние 24 часа.
+2. Структура хранилища:
+
+.
+└── target_folder/
+    ├── [filename].csv   # Файл с данными
+    └── [filename].json  # Манифест (метаданные)
+
+3. Формат JSON-манифеста (актуальный):
+json
+
+{
+  "user_id": "string",
+  "user_email": "string",
+  "subscription_type": "FREE_TRIAL | STANDARD | PREMIUM",
+  "file_name": "string",
+  "upload_timestamp": 1712512500 
+}
+
+Примечание: upload_timestamp передается в формате Unix Epoch (секунды) для исключения проблем с часовыми поясами.
+4. Логика сопоставления (Back-end):
+
+    FREE_TRIAL → RandomForest (лимит: 1 CSV).
+    STANDARD → LGBM.
+    PREMIUM → Model_3.
+
+5. Алгоритм работы скрипта:
+
+    Первичный фильтр (FS): Поиск файлов через find -mmin -1440 (созданные за последние 24 часа).
+    Вторичный фильтр (Business Logic): Сравнение текущего date +%s с полем upload_timestamp из JSON. Если разница > 86400 сек, файл игнорируется.
+    Безопасность: Обработка имен файлов с пробелами (print0), логирование через функцию log_message (INFO, NOTICE, ERROR).
+
+6. Текущий статус: Перешли на универсальный формат времени (Unix Time), убрали избыточные поля из JSON (task_info, model_name, path). Скрипт готов к интеграции с реальными командами запуска моделей.
