@@ -1,3 +1,9 @@
+#!/bin/bash
+##############################################################
+## Script for link backend and frontend Omnicare diagnostic ##
+## Author Vladimir Shumeyko(from.fmp@gmail.com)             ##
+##############################################################
+
 # --- Окружение и Безопасность ---
 export HOME=/home/minio;
 S3_ALIAS="myminio";
