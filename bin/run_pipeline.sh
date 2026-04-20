@@ -9,8 +9,8 @@ export HOME=/home/minio;
 S3_ALIAS="myminio";
 BUCKET_NAME="omnilink";
 LOCAL_TMP="/tmp/pipeline_sync";
-LOG_FILE="/var/log/Omnicare.log";
 PROJECT_DIR="/home/minio/Omnivis";
+LOG_FILE="$PROJECT_DIR/Omnicare.log";
 VENV_PATH="$PROJECT_DIR/venv/bin/activate";
 
 log_message() {
