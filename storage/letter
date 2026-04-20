@@ -1,0 +1,31 @@
+markdown
+
+### Storage Strategy Selection: Local FS vs. S3
+
+#### 1. Local Storage (Local Filesystem) — "Fast Start"
+*   **Best for:** Projects where Frontend and Backend share the same server or a high-speed network mount.
+*   **Pros:** 
+    *   Maximum I/O speed for processing large CSV files.
+    *   Zero additional infrastructure costs.
+    *   Simplified permission management via standard Linux `chmod/chown`.
+*   **Risks:** 
+    *   Horizontal scaling is difficult (requires NFS/rsync for multi-server setups).
+    *   Risk of local disk exhaustion if cleanup policies fail.
+
+#### 2. S3-Compatible Storage (AWS S3 / MinIO) — "Industry Standard"
+*   **Best for:** Physically separated Frontend/Backend or high-growth production environments.
+*   **Pros:** 
+    *   Virtually unlimited storage capacity.
+    *   Enhanced security via IAM keys and Pre-signed URLs.
+    *   Easier to scale processing across multiple workers/nodes.
+*   **Cons:** 
+    *   Slight latency due to network overhead (files must be fetched before processing).
+    *   Requires additional setup (AWS CLI, SDK integration).
+
+---
+
+### Final Recommendation
+We will proceed with **Local Storage** (`/storage_root/`) for the initial phase to ensure the fastest possible integration between Frontend and Backend. 
+
+**Strategy:** 
+The codebase will be architected using path variables to ensure a "plug-and-play" transition to **MinIO (S3-compatible)**. This allows us to maintain the simplicity of local development while remaining ready for seamless industrial scaling in the future.

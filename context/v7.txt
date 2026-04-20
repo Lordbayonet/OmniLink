@@ -1,0 +1,114 @@
+Контекст проекта Pipeline v4.1 (Зафиксировано)
+1. Архитектура и Безопасность:
+
+    User: minio (nologin, Home: /home/minio).
+    Storage: MinIO S3 (бакет omnilink).
+    Client: mcli (алиас myminio, настроен для пользователя minio).
+    Project Path: /home/minio/Omnivis/.
+    Logs: /var/log/Omnicare.log (владелец minio).
+    Temp: /tmp/pipeline_sync/ (автоочистка).
+
+2. Бизнес-логика (Модели):
+
+    FREE_TRIAL → model1 + --submodel randomforest.
+    STANDARD → model1 + --submodel lgbm.
+    PREMIUM → model3.
+3. Скрипт подготовки тестовых данных (prepare_tests.sh)
+Этот скрипт имитирует работу фронтенда по стандарту Storage Upload Documentation v2.0.
+bash
+
+#!/bin/bash
+S3_ALIAS="myminio";
+BUCKET_NAME="omnilink";
+export HOME=/home/minio;
+NOW=$(date +%s);
+
+prepare_task() {
+    local U_ID="$1"; local EMAIL="$2"; local SUB="$3"; local SRC_CSV="$4";
+    echo "[TEST] Подготовка пакета для $U_ID...";
+    local TARGET_CSV="data_report.csv";
+    local TARGET_JSON="data_report.json";
+
+    cat <<EOF > "$TARGET_JSON"
+{
+  "user_id": "$U_ID",
+  "user_email": "$EMAIL",
+  "subscription_type": "$SUB",
+  "file_name": "$TARGET_CSV",
+  "upload_timestamp": $NOW
+}
+EOF
+    mcli cp "$SRC_CSV" "$S3_ALIAS/$BUCKET_NAME/$U_ID/$TARGET_CSV";
+    mcli cp "$TARGET_JSON" "$S3_ALIAS/$BUCKET_NAME/$U_ID/$TARGET_JSON";
+    rm "$TARGET_JSON";
+}
+
+prepare_task "BobGas" "bob@gas.com" "FREE_TRIAL" "BobGas.csv";
+prepare_task "JohnDig" "john@dig.com" "STANDARD" "JohnDig.csv";
+prepare_task "KimBas" "kim@bas.com" "PREMIUM" "KimBas.csv";
+echo "[DONE] Тесты загружены.";
+
+4. Финальный управляющий скрипт (run_pipeline.sh)
+Основной диспетчер с обработкой исключений и синхронизацией имен.
+
+#!/bin/bash
+export HOME=/home/minio;
+S3_ALIAS="myminio";
+BUCKET_NAME="omnilink";
+LOCAL_TMP="/tmp/pipeline_sync";
+LOG_FILE="/var/log/Omnicare.log";
+PROJECT_DIR="/home/minio/Omnivis";
+VENV_PATH="$PROJECT_DIR/venv/bin/activate";
+
+log_message() {
+    echo "[$(date "+%Y%m%d-%H%M%S")] [$1] $2" >> "$LOG_FILE";
+};
+
+mkdir -p "$LOCAL_TMP";
+log_message "INFO" "--- Старт сессии ---";
+mcli mirror --exclude "*.pdf" "$S3_ALIAS/$BUCKET_NAME" "$LOCAL_TMP";
+
+find "$LOCAL_TMP" -mindepth 2 -maxdepth 2 -type f -name "data_report.json" | while read -r json_path; do
+    USER_DIR=$(dirname "$json_path");
+    REL_PATH=${USER_DIR#$LOCAL_TMP/};
+    U_ID=$(basename "$USER_DIR");
+    SUB_TYPE=$(jq -r '.subscription_type' "$json_path" 2>/dev/null);
+    CSV_NAME=$(jq -r '.file_name' "$json_path" 2>/dev/null);
+    CSV_PATH="$USER_DIR/$CSV_NAME";
+
+    if [ ! -f "$CSV_PATH" ]; then
+        log_message "ERROR" "[$U_ID] CSV не найден."; rm -rf "$USER_DIR"; continue;
+    fi;
+
+    case "$SUB_TYPE" in
+        "FREE_TRIAL") MODEL_PARAM="model1"; SUB_PARAM="randomforest" ;;
+        "STANDARD")   MODEL_PARAM="model1"; SUB_PARAM="lgbm" ;;
+        "PREMIUM")    MODEL_PARAM="model3"; SUB_PARAM="xgboost" ;;
+        *) log_message "ERROR" "[$U_ID] Неизвестная подписка."; rm -rf "$USER_DIR"; continue ;;
+    esac;
+
+    log_message "INFO" "[$U_ID] Запуск $MODEL_PARAM...";
+    cd "$PROJECT_DIR" || exit 1;
+    source venv/bin/activate;
+    OUTPUT_PDF="${U_ID}_result.pdf";
+
+    python3 predictions.py "$CSV_PATH" "$USER_DIR/output.csv" --model "$MODEL_PARAM" \
+            --submodel "$SUB_PARAM" --target "Protein_Number" --pdf "$USER_DIR/$OUTPUT_PDF";
+    
+    STATUS=$?; deactivate; cd - > /dev/null;
+
+    if [ $STATUS -eq 0 ]; then
+        log_message "INFO" "[$U_ID] Успех. Загрузка отчета.";
+        mcli cp "$USER_DIR/$OUTPUT_PDF" "$S3_ALIAS/$BUCKET_NAME/$REL_PATH/";
+        mcli rm "$S3_ALIAS/$BUCKET_NAME/$REL_PATH/data_report.json";
+        mcli rm "$S3_ALIAS/$BUCKET_NAME/$REL_PATH/data_report.csv";
+    else
+        log_message "ERROR" "[$U_ID] Бэкенд упал с кодом $STATUS.";
+    fi;
+    rm -rf "$USER_DIR";
+done;
+rm -rf "${LOCAL_TMP:?}"/*;
+log_message 
+
+"INFO" "--- Сессия завершена ---";
+

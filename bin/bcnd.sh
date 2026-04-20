@@ -1,104 +1,109 @@
-#!/bin/bash
-##############################################################
-## Script for link backend and frontend Omnicare diagnostic ##
-## Author Vladimir Shumeyko(from.fmp@gmail.com)             ##
-##############################################################
-# --- Настройки ---
-TARGET_DIR="/home/lordbayonet/storage"
-LOG_FILE="./processing_$(date '+%Y%m%d').log"
+# --- Окружение и Безопасность ---
+export HOME=/home/minio;
+S3_ALIAS="myminio";
+BUCKET_NAME="omnilink";
+LOCAL_TMP="/tmp/pipeline_sync";
+LOG_FILE="/var/log/Omnicare.log";
+PROJECT_DIR="/home/minio/Omnivis";
+VENV_PATH="$PROJECT_DIR/venv/bin/activate";
 
-# Константы времени
-NOW=$(date +%s)
-SECONDS_IN_24H=86400
-ALLOWED_DRIFT=300 # Запас 5 минут на случай рассинхрона часов
-
-# --- Функция логирования ---
 log_message() {
-    local TYPE="$1"
-    local MESSAGE="$2"
-    local TIMESTAMP=$(date "+%Y%m%d-%H%M%S")
-    echo "[$TIMESTAMP] [$TYPE] $MESSAGE" >> "$LOG_FILE"
-    # Вывод в консоль для мониторинга (кроме обычных INFO)
-    [[ "$TYPE" != "INFO" ]] && echo "[$TYPE] $MESSAGE"
-}
+    local TYPE="$1";
+    local MESSAGE="$2";
+    echo "[$(date "+%Y%m%d-%H%M%S")] [$TYPE] $MESSAGE" >> "$LOG_FILE";
+};
 
-# --- Проверки перед стартом ---
-if ! command -v jq &> /dev/null; then
-    log_message "ERROR" "Утилита 'jq' не найдена. Установите: sudo apt install jq"
-    exit 1
-fi
+# 1. Подготовка локальной среды
+mkdir -p "$LOCAL_TMP";
+log_message "INFO" "--- Старт сессии обработки очереди ---";
 
-if [ ! -d "$STORAGE_ROOT" ]; then
-    log_message "ERROR" "Корневая директория хранилища не найдена: $STORAGE_ROOT"
-    exit 1
-fi
+# 2. Синхронизация из S3 (Исключаем PDF, чтобы не качать готовые отчеты)
+log_message "INFO" "Синхронизация входящих данных из S3...";
+mcli mirror --exclude "*.pdf" "$S3_ALIAS/$BUCKET_NAME" "$LOCAL_TMP";
 
-log_message "INFO" "=== Старт сессии обработки (UTC: $(date -u)) ==="
-
-# --- Основной цикл ---
-# Ищем JSON-файлы в папках пользователей (уровень вложенности 2)
-# Первичный фильтр по ФС: файлы изменены за последние 24 часа
-find "$STORAGE_ROOT" -mindepth 2 -maxdepth 2 -type f -name "*.json" -mmin -1440 -print0 | while IFS= read -r -d '' json_path; do
+# 3. Основной цикл (обход папок пользователей по наличию манифеста)
+find "$LOCAL_TMP" -mindepth 2 -maxdepth 2 -type f -name "data_report.json" | while read -r json_path; do
     
-    USER_DIR=$(dirname "$json_path")
-    JSON_FILE=$(basename "$json_path")
+    USER_DIR=$(dirname "$json_path");
+    REL_PATH=${USER_DIR#$LOCAL_TMP/}; # Относительный путь (UserID)
+    U_ID=$(basename "$USER_DIR");    # Идентификатор пользователя
 
-    # 1. Парсинг данных манифеста
-    UPLOAD_TS=$(jq -r '.upload_timestamp' "$json_path" 2>/dev/null)
-    USER_EMAIL=$(jq -r '.user_email' "$json_path" 2>/dev/null)
-    SUB_TYPE=$(jq -r '.subscription_type' "$json_path" 2>/dev/null)
-    CSV_NAME=$(jq -r '.file_name' "$json_path" 2>/dev/null)
-    U_ID=$(jq -r '.user_id' "$json_path" 2>/dev/null)
+    # Парсинг параметров манифеста
+    SUB_TYPE=$(jq -r '.subscription_type' "$json_path" 2>/dev/null);
+    CSV_NAME=$(jq -r '.file_name' "$json_path" 2>/dev/null);
+    USER_EMAIL=$(jq -r '.user_email' "$json_path" 2>/dev/null);
+    CSV_PATH="$USER_DIR/$CSV_NAME";
 
-    # 2. Вторичный фильтр: Проверка Unix Timestamp из манифеста
-    if [[ ! "$UPLOAD_TS" =~ ^[0-9]+$ ]]; then
-        log_message "ERROR" "Ошибка формата timestamp в $JSON_FILE"
-        continue
-    fi
-
-    DIFF=$(( NOW - UPLOAD_TS ))
-
-    if [ "$DIFF" -gt "$SECONDS_IN_24H" ] || [ "$DIFF" -lt "-$ALLOWED_DRIFT" ]; then
-        log_message "NOTICE" "Файл $JSON_FILE пропущен: время в манифесте ($UPLOAD_TS) вне окна 24ч (DIFF: $DIFF сек)"
-        continue
-    fi
-
-    # 3. Валидация наличия CSV файла
-    CSV_PATH="$USER_DIR/$CSV_NAME"
+    # Проверка целостности данных
     if [ ! -f "$CSV_PATH" ]; then
-        log_message "ERROR" "CSV файл не найден: $CSV_NAME в папке $USER_DIR"
-        continue
-    fi
+        log_message "ERROR" "[$U_ID] CSV-файл $CSV_NAME не найден. Пропуск.";
+        rm -rf "$USER_DIR";
+        continue;
+    fi;
 
-    # 4. Логика выбора модели на основе подписки
+    # 4. Логика выбора модели (согласно API predictions.py)
     case "$SUB_TYPE" in
-        "FREE_TRIAL")
-            MODEL="RandomForest"
+        "FREE_TRIAL") 
+            MODEL_PARAM="model1"; 
+            SUB_PARAM="randomforest"; 
             ;;
-        "STANDARD")
-            MODEL="LGBM"
+        "STANDARD")   
+            MODEL_PARAM="model1"; 
+            SUB_PARAM="lgbm"; 
             ;;
-        "PREMIUM")
-            MODEL="Model_3"
+        "PREMIUM")    
+            MODEL_PARAM="model3"; 
+            SUB_PARAM="xgboost"; # Игнорируется для model3, но требуется позиционно
             ;;
         *)
-            log_message "ERROR" "Неизвестный тип подписки [$SUB_TYPE] для пользователя $USER_EMAIL"
-            continue
+            log_message "ERROR" "[$U_ID] Неизвестная подписка: $SUB_TYPE. Пропуск.";
+            rm -rf "$USER_DIR";
+            continue;
             ;;
-    esac
+    esac;
 
     # 5. Выполнение обработки
-    log_message "INFO" "Обработка: User ID [$U_ID] | Model [$MODEL] | File [$CSV_NAME]"
+    log_message "INFO" "[$U_ID] Запуск: $MODEL_PARAM ($SUB_PARAM) для $USER_EMAIL";
     
-    # Пример вызова модели:
-    # python3 run_inference.py --model "$MODEL" --data "$CSV_PATH" --email "$USER_EMAIL"
+    cd "$PROJECT_DIR" || { log_message "ERROR" "Не удалось войти в $PROJECT_DIR"; continue; };
+    source venv/bin/activate;
     
-    if [ $? -eq 0 ]; then
-        log_message "INFO" "Успешно обработано: $JSON_FILE"
+    OUTPUT_PDF="${U_ID}_result.pdf";
+
+    # Запуск бэкенда
+    python3 predictions.py \
+        "$CSV_PATH" \
+        "$USER_DIR/output.csv" \
+        --model "$MODEL_PARAM" \
+        --submodel "$SUB_PARAM" \
+        --target "Protein_Number" \
+        --pdf "$USER_DIR/$OUTPUT_PDF";
+    
+    STATUS=$?;
+    deactivate;
+    cd - > /dev/null;
+
+    # 6. Обработка результата и Исключений
+    if [ $STATUS -eq 0 ]; then
+        log_message "INFO" "[$U_ID] Успех. Загрузка отчета и очистка S3.";
+        
+        # Загружаем PDF в S3
+        mcli cp "$USER_DIR/$OUTPUT_PDF" "$S3_ALIAS/$BUCKET_NAME/$REL_PATH/";
+        
+        # Удаляем JSON и CSV из S3 (очередь очищена)
+        mcli rm "$S3_ALIAS/$BUCKET_NAME/$REL_PATH/data_report.json";
+        mcli rm "$S3_ALIAS/$BUCKET_NAME/$REL_PATH/data_report.csv";
     else
-        log_message "ERROR" "Сбой при выполнении модели $MODEL для $CSV_NAME"
-    fi
+        # В случае падения бэкенда:
+        log_message "ERROR" "[$U_ID] Бэкенд упал с кодом $STATUS. Исходники сохранены в S3.";
+        # Исходники в S3 НЕ удаляем, чтобы можно было перезапустить после фикса.
+    fi;
 
-done
+    # В ЛЮБОМ СЛУЧАЕ удаляем локальную копию данных, чтобы не забивать /tmp
+    rm -rf "$USER_DIR";
 
-log_message "INFO" "=== Сессия завершена ==="
+done;
+
+# 7. Финальная очистка временной директории
+rm -rf "${LOCAL_TMP:?}"/*;
+log_message "INFO" "--- Сессия завершена ---";
