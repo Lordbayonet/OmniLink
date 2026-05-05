@@ -112,3 +112,22 @@ log_message
 
 "INFO" "--- Сессия завершена ---";
 
+Актуальное состояние системы (дополнение к v4.1):
+1. Доступы и пользователи:
+
+    Root User (System): rtoor / omnilink_pa$$w0rd (прописан в /etc/default/minio).
+    Admin IAM: lordbayonet (права: consoleAdmin, readwrite). Используется для управления через браузер на порту 9001.
+    Frontend User: frontend_user (права: readwrite). Создан специально для интеграции с фронтендом.
+
+2. Сетевая конфигурация:
+
+    Host: test.cfsf.ru (IP: 204.168.169.159).
+    Port 9000 (API): Закрыт, ждем IP от фронтенда.
+    Port 9001 (Console): Открыт только для IP 217.71.139.236. Служит для администрирования.
+    CORS: На данный момент не настроен (активируется по запросу разработчика через XML-конфигурацию).
+
+3. Инструкции для фронтенда:
+
+    Переданы параметры подключения (Endpoint, Bucket, Keys).
+    Зафиксирован стандарт data_report.json для запуска пайплайна (поля: user_id, user_email, subscription_type, file_name, upload_timestamp).
+    Согласована структура папок в бакете: omnilink/{userId}/.
